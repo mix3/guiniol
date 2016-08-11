@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-
-	"github.com/k0kubun/pp"
+	"time"
 
 	"golang.org/x/net/context"
 	"golang.org/x/net/websocket"
+
+	"github.com/k0kubun/pp"
 )
 
 type Connection struct {
@@ -86,56 +87,63 @@ func (conn *Connection) newWSConnection() (*websocket.Conn, error) {
 }
 
 func (conn *Connection) Loop() {
-	ws, err := conn.newWSConnection()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	for {
-		data := json.RawMessage{}
-		if err := websocket.JSON.Receive(ws, &data); err != nil {
-			log.Println(err)
-			continue
+		ws, err := conn.newWSConnection()
+		if err != nil {
+			log.Fatal(err)
 		}
+		defer ws.Close()
+		ws.SetDeadline(time.Now().Add(10 * time.Minute))
 
-		event := &Type{}
-		if err := json.Unmarshal(data, event); err != nil {
-			log.Println(err)
-			continue
-		}
+		func() {
+			for {
+				data := json.RawMessage{}
+				if err := websocket.JSON.Receive(ws, &data); err != nil {
+					log.Printf("failed websocket json receive: %v", err)
+					return
+				}
 
-		v, ok := eventMapping[event.Type]
-		if !ok {
-			continue
-		}
+				event := &Type{}
+				if err := json.Unmarshal(data, event); err != nil {
+					log.Printf("failed json unmarshal: %v", err)
+					continue
+				}
 
-		typeOf := reflect.TypeOf(v)
-		ep := reflect.New(typeOf).Interface()
-		if err := json.Unmarshal(data, ep); err != nil {
-			log.Println(err)
-			continue
-		}
+				v, ok := eventMapping[event.Type]
+				if !ok {
+					continue
+				}
 
-		switch e := ep.(type) {
-		case *HelloEvent:
-			// ...
-		case *MessageEvent:
-			conn.CallCb(*e)
-		case *ChannelCreatedEvent:
-			conn.channelMap[e.Channel.Id] = e.Channel.Name
-			pp.Println(conn.channelMap)
-		case *ChannelDeletedEvent:
-			delete(conn.channelMap, e.Channel)
-			pp.Println(conn.channelMap)
-		case *ChannelRenameEvent:
-			conn.channelMap[e.Channel.Id] = e.Channel.Name
-			pp.Println(conn.channelMap)
-		case *UserChangeEvent:
-			conn.userMap[e.User.Id] = e.User.Name
-			pp.Println(conn.userMap)
-		default:
-		}
+				typeOf := reflect.TypeOf(v)
+				ep := reflect.New(typeOf).Interface()
+				if err := json.Unmarshal(data, ep); err != nil {
+					log.Printf("failed json unmarshal for type: %v", err)
+					continue
+				}
+
+				switch e := ep.(type) {
+				case *HelloEvent:
+					// ...
+				case *MessageEvent:
+					conn.CallCb(*e)
+				case *ChannelCreatedEvent:
+					conn.channelMap[e.Channel.Id] = e.Channel.Name
+					pp.Println(conn.channelMap)
+				case *ChannelDeletedEvent:
+					delete(conn.channelMap, e.Channel)
+					pp.Println(conn.channelMap)
+				case *ChannelRenameEvent:
+					conn.channelMap[e.Channel.Id] = e.Channel.Name
+					pp.Println(conn.channelMap)
+				case *UserChangeEvent:
+					conn.userMap[e.User.Id] = e.User.Name
+					pp.Println(conn.userMap)
+				default:
+				}
+			}
+		}()
 	}
+
 }
 
 func (conn *Connection) CallCb(e MessageEvent) {
